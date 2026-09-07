@@ -9,7 +9,6 @@ pipeline {
     environment {
         SONAR_HOST = 'http://13.206.75.229:9000'
         DOCKER_IMAGE = 'commons-lang-build:latest'
-        // GitHub repo for status updates
         REPO_OWNER = 'apache'
         REPO_NAME = 'commons-lang'
     }
@@ -18,7 +17,6 @@ pipeline {
         stage('Setup') {
             steps {
                 script {
-                    // Better project key naming with PR info
                     if (env.CHANGE_ID) {
                         env.SONAR_PROJECT_KEY = "commons-lang-pr-${env.CHANGE_ID}"
                         env.SONAR_PROJECT_NAME = "Commons Lang PR #${env.CHANGE_ID}"
@@ -40,7 +38,6 @@ pipeline {
             steps {
                 script {
                     if (env.CHANGE_ID) {
-                        // For PR builds, checkout the PR branch
                         checkout([
                             $class: 'GitSCM',
                             branches: [[name: "${env.CHANGE_BRANCH}"]],
@@ -50,7 +47,6 @@ pipeline {
                                 [$class: 'CloneOption', depth: 0, noTags: false, reference: '', shallow: false]
                             ]
                         ])
-                        // Fetch target branch for comparison
                         dir('source') {
                             sh "git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}"
                         }
@@ -113,7 +109,6 @@ CMD ["mvn", "--version"]
                             sh '''
                                 echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
                                 
-                                # Build SonarQube command with PR-specific params
                                 SONAR_CMD="mvn sonar:sonar \
                                     -Dsonar.host.url=${SONAR_HOST} \
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
@@ -123,7 +118,6 @@ CMD ["mvn", "--version"]
                                     -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
                                     -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
                                 
-                                # Add PR-specific parameters if this is a PR
                                 if [ -n "${CHANGE_ID}" ]; then
                                     SONAR_CMD="${SONAR_CMD} \
                                         -Dsonar.branch.name=${SOURCE_BRANCH} \
@@ -134,7 +128,6 @@ CMD ["mvn", "--version"]
                                 
                                 echo "Executing: ${SONAR_CMD}"
                                 
-                                # Create tar and run scan
                                 tar czf /tmp/workspace-scan.tar.gz . --exclude=.git --exclude=target
                                 docker run --rm \
                                     -v /tmp/workspace-scan.tar.gz:/tmp/workspace-scan.tar.gz \
@@ -156,17 +149,14 @@ CMD ["mvn", "--version"]
             steps {
                 script {
                     dir(env.CHANGE_ID ? 'source' : '.') {
-                        // Wait for analysis to complete and get quality gate status
                         echo "⏳ Waiting for SonarQube analysis to complete..."
                         
-                        // Poll SonarQube API for quality gate status
                         def maxAttempts = 30
                         def waitTime = 10
                         def qualityGatePassed = false
                         def analysisId = ""
                         
                         for (int i = 0; i < maxAttempts; i++) {
-                            // Get analysis ID
                             def projectStatus = sh(
                                 script: """
                                     curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/project_analyses/search?project=${SONAR_PROJECT_KEY}&ps=1" | jq -r '.analyses[0].key'
@@ -178,7 +168,6 @@ CMD ["mvn", "--version"]
                                 analysisId = projectStatus
                                 echo "✅ Found analysis: ${analysisId}"
                                 
-                                // Get quality gate status
                                 def gateStatus = sh(
                                     script: """
                                         curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?analysisId=${analysisId}" | jq -r '.projectStatus.status'
@@ -202,7 +191,6 @@ CMD ["mvn", "--version"]
                             sleep time: waitTime, unit: 'SECONDS'
                         }
                         
-                        // Update GitHub PR status
                         if (qualityGatePassed) {
                             echo "✅ Quality Gate PASSED!"
                             updateGitHubStatus('success', 'SonarQube: New code quality passed!')
@@ -238,20 +226,25 @@ CMD ["mvn", "--version"]
             cleanWs()
         }
         failure {
-            // Update GitHub status on build failure
-            if (env.CHANGE_ID) {
-                updateGitHubStatus('failure', 'Jenkins build failed. Check logs.')
+            script {
+                if (env.CHANGE_ID) {
+                    updateGitHubStatus('failure', 'Jenkins build failed. Check logs.')
+                }
             }
         }
         aborted {
-            if (env.CHANGE_ID) {
-                updateGitHubStatus('failure', 'Jenkins build aborted.')
+            script {
+                if (env.CHANGE_ID) {
+                    updateGitHubStatus('failure', 'Jenkins build aborted.')
+                }
             }
         }
     }
 }
 
-// Helper function to update GitHub status
+// ------------------------------------------------------------------
+// Helper function to update GitHub PR status
+// ------------------------------------------------------------------
 def updateGitHubStatus(String state, String description) {
     withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
         sh """
