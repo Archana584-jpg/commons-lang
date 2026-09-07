@@ -17,11 +17,9 @@ pipeline {
                 script {
                     if (env.CHANGE_ID) {
                         env.SONAR_PROJECT_KEY = "commons-lang-pr-${env.CHANGE_ID}"
-                        env.IS_PR = 'true'
                         echo "🔍 PR #${env.CHANGE_ID}"
                     } else {
                         env.SONAR_PROJECT_KEY = 'commons-lang-main'
-                        env.IS_PR = 'false'
                         echo "📌 Main branch"
                     }
                 }
@@ -34,35 +32,9 @@ pipeline {
             }
         }
 
-        stage('Write Dockerfile') {
-            steps {
-                writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \\
-    openjdk-11-jdk-headless \\
-    maven \\
-    git \\
-    curl \\
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-CMD ["mvn", "--version"]
-'''
-            }
-        }
-
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
-            }
-        }
-
-        stage('Verify Maven') {
-            steps {
-                sh 'docker run --rm ${DOCKER_IMAGE} mvn --version'
             }
         }
 
@@ -70,27 +42,21 @@ CMD ["mvn", "--version"]
             steps {
                 sh '''
                     cd ${WORKSPACE}
-                    echo "Creating tar file..."
-                    tar -czf /tmp/workspace.tar.gz .
                     
-                    echo "Writing build script..."
-                    cat > /tmp/build.sh << 'EOFSCRIPT'
+                    cat > build.sh << 'EOFSCRIPT'
 #!/bin/bash
 set -e
-echo "Extracting workspace..."
-tar -xzf /tmp/workspace.tar.gz -C /app
-echo "Running Maven..."
+echo "Building..."
 mvn clean verify -DskipITs
 EOFSCRIPT
                     
-                    chmod +x /tmp/build.sh
+                    chmod +x build.sh
                     
-                    echo "Running build in Docker..."
                     docker run --rm --user root \
-                        -v /tmp:/tmp \
-                        -w /app \
+                        -v ${WORKSPACE}:${WORKSPACE} \
+                        -w ${WORKSPACE} \
                         ${DOCKER_IMAGE} \
-                        /tmp/build.sh
+                        ./build.sh
                 '''
             }
         }
@@ -100,29 +66,25 @@ EOFSCRIPT
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         cd ${WORKSPACE}
-                        tar -czf /tmp/workspace.tar.gz .
                         
-                        echo "Writing sonar script..."
-                        cat > /tmp/sonar.sh << 'EOFSCRIPT'
+                        cat > sonar.sh << 'EOFSCRIPT'
 #!/bin/bash
 set -e
-echo "Extracting workspace..."
-tar -xzf /tmp/workspace.tar.gz -C /app
-echo "Running SonarQube scan..."
+echo "Scanning..."
 mvn sonar:sonar \
-    -Dsonar.host.url=http://13.206.75.229:9000 \
+    -Dsonar.host.url=${SONAR_HOST} \
     -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
     -Dsonar.projectName=commons-lang \
     -Dsonar.login=${SONAR_TOKEN}
 EOFSCRIPT
                         
-                        chmod +x /tmp/sonar.sh
+                        chmod +x sonar.sh
                         
                         docker run --rm --user root \
-                            -v /tmp:/tmp \
-                            -w /app \
+                            -v ${WORKSPACE}:${WORKSPACE} \
+                            -w ${WORKSPACE} \
                             ${DOCKER_IMAGE} \
-                            /tmp/sonar.sh
+                            ./sonar.sh
                     '''
                 }
             }
