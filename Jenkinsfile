@@ -26,39 +26,44 @@ pipeline {
                     } else {
                         env.SONAR_PROJECT_KEY = 'commons-lang-main'
                         env.SONAR_PROJECT_NAME = 'Commons Lang Main'
-                        env.SOURCE_BRANCH = 'main'
-                        env.TARGET_BRANCH = 'main'
+                        env.SOURCE_BRANCH = 'master'
+                        env.TARGET_BRANCH = 'master'
                         echo "📌 Main branch scan"
                     }
                 }
             }
         }
 
-        stage('Checkout') {
+        // For PR we need a custom checkout into a subdirectory
+        stage('Checkout PR') {
+            when {
+                expression { env.CHANGE_ID != null }
+            }
             steps {
                 script {
-                    if (env.CHANGE_ID) {
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: "${env.CHANGE_BRANCH}"]],
-                            userRemoteConfigs: [[url: "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"]],
-                            extensions: [
-                                [$class: 'RelativeTargetDirectory', relativeTargetDir: 'source'],
-                                [$class: 'CloneOption', depth: 0, noTags: false, reference: '', shallow: false]
-                            ]
-                        ])
-                        dir('source') {
-                            sh "git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}"
-                        }
-                    } else {
-                        checkout scm
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: "${env.CHANGE_BRANCH}"]],
+                        userRemoteConfigs: [[url: "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"]],
+                        extensions: [
+                            [$class: 'RelativeTargetDirectory', relativeTargetDir: 'source'],
+                            [$class: 'CloneOption', depth: 0, noTags: false, reference: '', shallow: false]
+                        ]
+                    ])
+                    dir('source') {
+                        sh "git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}"
                     }
                 }
             }
         }
 
-        stage('Write Dockerfile') {
+        // Build Docker image only if needed (for PRs or if you prefer)
+        stage('Build Docker Image') {
+            when {
+                expression { env.CHANGE_ID != null }  // only build for PRs
+            }
             steps {
+                // This Dockerfile is only needed for PR builds
                 writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
@@ -71,25 +76,40 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /workspace
 CMD ["mvn", "--version"]
 '''
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
             }
         }
 
-        stage('Build & Test with Coverage') {
+        // Build & Test – for master: use agent's Maven, for PR: use Docker
+        stage('Build & Test') {
             steps {
                 script {
-                    dir(env.CHANGE_ID ? 'source' : '.') {
+                    if (env.CHANGE_ID) {
+                        // PR – use Docker (but first debug)
+                        dir('source') {
+                            sh '''
+                                echo "===== DEBUG: Current directory ====="
+                                pwd
+                                echo "===== Files in current directory ====="
+                                ls -la
+                                echo "===== Checking for pom.xml ====="
+                                if [ -f pom.xml ]; then echo "pom.xml found"; else echo "pom.xml NOT found"; fi
+                            '''
+                            sh '''
+                                echo "Running Maven build with coverage inside Docker..."
+                                docker run --rm \
+                                    -v $(pwd):/workspace \
+                                    ${DOCKER_IMAGE} \
+                                    bash -c "ls -la /workspace && cd /workspace && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false"
+                                echo "Build complete"
+                            '''
+                        }
+                    } else {
+                        // master – run Maven directly on agent
                         sh '''
-                            echo "Running Maven build with coverage inside Docker..."
-                            docker run --rm \
-                                -v $(pwd):/workspace \
-                                ${DOCKER_IMAGE} \
-                                bash -c "cd /workspace && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false -Pjacoco"
+                            echo "Running Maven build on agent (no Docker)..."
+                            # Assumes Maven and JDK are installed on agent
+                            mvn clean verify site -Dcommons.jacoco.haltOnFailure=false
                             echo "Build complete"
                         '''
                     }
@@ -97,13 +117,47 @@ CMD ["mvn", "--version"]
             }
         }
 
+        // SonarQube Scan – similar split
         stage('SonarQube Scan') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     script {
-                        dir(env.CHANGE_ID ? 'source' : '.') {
+                        if (env.CHANGE_ID) {
+                            dir('source') {
+                                sh '''
+                                    echo "Running SonarQube scan for ${SONAR_PROJECT_KEY} using Docker..."
+                                    
+                                    SONAR_CMD="mvn sonar:sonar \
+                                        -Dsonar.host.url=${SONAR_HOST} \
+                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                        -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                                        -Dsonar.login=${SONAR_TOKEN} \
+                                        -Dsonar.java.binaries=target/classes \
+                                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                        -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
+                                    
+                                    if [ -n "${CHANGE_ID}" ]; then
+                                        SONAR_CMD="${SONAR_CMD} \
+                                            -Dsonar.branch.name=${SOURCE_BRANCH} \
+                                            -Dsonar.branch.target=${TARGET_BRANCH} \
+                                            -Dsonar.analysis.leak.period=${TARGET_BRANCH}"
+                                        echo "🔍 PR scan mode enabled"
+                                    fi
+                                    
+                                    echo "Executing: ${SONAR_CMD}"
+                                    
+                                    docker run --rm \
+                                        -v $(pwd):/workspace \
+                                        ${DOCKER_IMAGE} \
+                                        bash -c "cd /workspace && ${SONAR_CMD}"
+                                    
+                                    echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
+                                '''
+                            }
+                        } else {
+                            // master – run Maven directly on agent
                             sh '''
-                                echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
+                                echo "Running SonarQube scan for ${SONAR_PROJECT_KEY} on agent..."
                                 
                                 SONAR_CMD="mvn sonar:sonar \
                                     -Dsonar.host.url=${SONAR_HOST} \
@@ -114,22 +168,9 @@ CMD ["mvn", "--version"]
                                     -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
                                     -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
                                 
-                                if [ -n "${CHANGE_ID}" ]; then
-                                    SONAR_CMD="${SONAR_CMD} \
-                                        -Dsonar.branch.name=${SOURCE_BRANCH} \
-                                        -Dsonar.branch.target=${TARGET_BRANCH} \
-                                        -Dsonar.analysis.leak.period=${TARGET_BRANCH}"
-                                    echo "🔍 PR scan mode enabled"
-                                fi
-                                
                                 echo "Executing: ${SONAR_CMD}"
-                                
-                                docker run --rm \
-                                    -v $(pwd):/workspace \
-                                    ${DOCKER_IMAGE} \
-                                    bash -c "cd /workspace && ${SONAR_CMD}"
-                                
-                                echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
+                                eval ${SONAR_CMD}
+                                echo "✅ Scan complete"
                             '''
                         }
                     }
@@ -137,13 +178,14 @@ CMD ["mvn", "--version"]
             }
         }
 
+        // Quality Gate Check – only for PRs
         stage('Quality Gate Check') {
             when {
                 expression { env.CHANGE_ID != null }
             }
             steps {
                 script {
-                    dir(env.CHANGE_ID ? 'source' : '.') {
+                    dir('source') {
                         echo "⏳ Waiting for SonarQube analysis to complete..."
                         
                         def maxAttempts = 30
