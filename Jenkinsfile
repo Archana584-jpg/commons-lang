@@ -66,6 +66,19 @@ CMD ["mvn", "--version"]
             }
         }
 
+        stage('Debug: List Files') {
+            steps {
+                sh '''
+                    echo "Workspace: ${WORKSPACE}"
+                    echo "Files in workspace:"
+                    ls -la ${WORKSPACE} | head -20
+                    echo ""
+                    echo "Looking for pom.xml:"
+                    find ${WORKSPACE} -name "pom.xml" -type f
+                '''
+            }
+        }
+
         stage('Build & Test') {
             steps {
                 sh '''
