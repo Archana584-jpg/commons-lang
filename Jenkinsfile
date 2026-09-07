@@ -72,14 +72,25 @@ CMD ["mvn", "--version"]
                     cd ${WORKSPACE}
                     echo "Creating tar file..."
                     tar -czf /tmp/workspace.tar.gz .
-                    ls -lh /tmp/workspace.tar.gz
                     
-                    echo "Running Maven in Docker..."
+                    echo "Writing build script..."
+                    cat > /tmp/build.sh << 'EOFSCRIPT'
+#!/bin/bash
+set -e
+echo "Extracting workspace..."
+tar -xzf /tmp/workspace.tar.gz -C /app
+echo "Running Maven..."
+mvn clean verify -DskipITs
+EOFSCRIPT
+                    
+                    chmod +x /tmp/build.sh
+                    
+                    echo "Running build in Docker..."
                     docker run --rm --user root \
                         -v /tmp:/tmp \
                         -w /app \
                         ${DOCKER_IMAGE} \
-                        bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn clean verify -DskipITs"
+                        /tmp/build.sh
                 '''
             }
         }
@@ -89,15 +100,29 @@ CMD ["mvn", "--version"]
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         cd ${WORKSPACE}
-                        echo "Creating tar file..."
                         tar -czf /tmp/workspace.tar.gz .
                         
-                        echo "Running SonarQube scan in Docker..."
+                        echo "Writing sonar script..."
+                        cat > /tmp/sonar.sh << 'EOFSCRIPT'
+#!/bin/bash
+set -e
+echo "Extracting workspace..."
+tar -xzf /tmp/workspace.tar.gz -C /app
+echo "Running SonarQube scan..."
+mvn sonar:sonar \
+    -Dsonar.host.url=http://13.206.75.229:9000 \
+    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+    -Dsonar.projectName=commons-lang \
+    -Dsonar.login=${SONAR_TOKEN}
+EOFSCRIPT
+                        
+                        chmod +x /tmp/sonar.sh
+                        
                         docker run --rm --user root \
                             -v /tmp:/tmp \
                             -w /app \
                             ${DOCKER_IMAGE} \
-                            bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar -Dsonar.host.url=${SONAR_HOST} -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName=commons-lang -Dsonar.login=${SONAR_TOKEN}"
+                            /tmp/sonar.sh
                     '''
                 }
             }
