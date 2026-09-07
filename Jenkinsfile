@@ -66,11 +66,23 @@ CMD ["mvn", "--version"]
             }
         }
 
+        stage('Debug: Check Docker Mount') {
+            steps {
+                sh '''
+                    echo "Checking if files are mounted inside Docker..."
+                    docker run --rm --user root \
+                        -v ${WORKSPACE}:/app \
+                        -w /app \
+                        ${DOCKER_IMAGE} \
+                        sh -c "echo 'Files in /app:' && ls -la /app | head -20"
+                '''
+            }
+        }
+
         stage('Build & Test') {
             steps {
                 sh '''
-                    docker run --rm \
-                        --user root \
+                    docker run --rm --user root \
                         -v ${WORKSPACE}:/app \
                         -w /app \
                         ${DOCKER_IMAGE} \
@@ -83,8 +95,7 @@ CMD ["mvn", "--version"]
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
-                        docker run --rm \
-                            --user root \
+                        docker run --rm --user root \
                             -v ${WORKSPACE}:/app \
                             -w /app \
                             ${DOCKER_IMAGE} \
