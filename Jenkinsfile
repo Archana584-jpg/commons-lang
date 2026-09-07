@@ -66,27 +66,16 @@ CMD ["mvn", "--version"]
             }
         }
 
-        stage('Debug: Check Docker Mount') {
-            steps {
-                sh '''
-                    echo "Checking if files are mounted inside Docker..."
-                    docker run --rm --user root \
-                        -v ${WORKSPACE}:/app \
-                        -w /app \
-                        ${DOCKER_IMAGE} \
-                        sh -c "echo 'Files in /app:' && ls -la /app | head -20"
-                '''
-            }
-        }
-
         stage('Build & Test') {
             steps {
                 sh '''
+                    cd ${WORKSPACE}
+                    tar -czf /tmp/workspace.tar.gz .
                     docker run --rm --user root \
-                        -v ${WORKSPACE}:/app \
+                        -v /tmp:/tmp \
                         -w /app \
                         ${DOCKER_IMAGE} \
-                        mvn clean verify -DskipITs
+                        sh -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn clean verify -DskipITs"
                 '''
             }
         }
@@ -95,15 +84,17 @@ CMD ["mvn", "--version"]
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
+                        cd ${WORKSPACE}
+                        tar -czf /tmp/workspace.tar.gz .
                         docker run --rm --user root \
-                            -v ${WORKSPACE}:/app \
+                            -v /tmp:/tmp \
                             -w /app \
                             ${DOCKER_IMAGE} \
-                            mvn sonar:sonar \
+                            sh -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar \
                                 -Dsonar.host.url=${SONAR_HOST} \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                                 -Dsonar.projectName=commons-lang \
-                                -Dsonar.login=${SONAR_TOKEN}
+                                -Dsonar.login=${SONAR_TOKEN}"
                     '''
                 }
             }
