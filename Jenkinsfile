@@ -58,21 +58,12 @@ CMD ["mvn", "--version"]
             steps {
                 sh '''
                     cd ${WORKSPACE}
-                    
-                    cat > build.sh << 'EOFSCRIPT'
-#!/bin/bash
-set -e
-echo "Building..."
-mvn clean verify -DskipITs
-EOFSCRIPT
-                    
-                    chmod +x build.sh
-                    
+                    echo "Running Maven build in Docker..."
                     docker run --rm --user root \
                         -v ${WORKSPACE}:${WORKSPACE} \
                         -w ${WORKSPACE} \
                         ${DOCKER_IMAGE} \
-                        ./build.sh
+                        mvn clean verify -DskipITs
                 '''
             }
         }
@@ -82,25 +73,16 @@ EOFSCRIPT
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         cd ${WORKSPACE}
-                        
-                        cat > sonar.sh << 'EOFSCRIPT'
-#!/bin/bash
-set -e
-echo "Scanning..."
-mvn sonar:sonar \
-    -Dsonar.host.url=${SONAR_HOST} \
-    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-    -Dsonar.projectName=commons-lang \
-    -Dsonar.login=${SONAR_TOKEN}
-EOFSCRIPT
-                        
-                        chmod +x sonar.sh
-                        
+                        echo "Running SonarQube scan in Docker..."
                         docker run --rm --user root \
                             -v ${WORKSPACE}:${WORKSPACE} \
                             -w ${WORKSPACE} \
                             ${DOCKER_IMAGE} \
-                            ./sonar.sh
+                            mvn sonar:sonar \
+                                -Dsonar.host.url=${SONAR_HOST} \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.projectName=commons-lang \
+                                -Dsonar.login=${SONAR_TOKEN}
                     '''
                 }
             }
