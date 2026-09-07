@@ -3,11 +3,12 @@ pipeline {
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '3'))
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 25, unit: 'MINUTES')
     }
 
     environment {
         SONAR_HOST = 'http://13.206.75.229:9000'
+        DOCKER_IMAGE = 'commons-lang-build:latest'
     }
 
     stages {
@@ -33,12 +34,21 @@ pipeline {
             }
         }
 
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t ${DOCKER_IMAGE} .'
+            }
+        }
+
         stage('Build & Test') {
             steps {
-                sh 'which mvn || echo "Maven not found, checking java..."'
-                sh 'java -version'
-                sh 'mvn --version'
-                sh 'mvn clean verify -DskipITs'
+                sh '''
+                    docker run --rm \
+                        -v /var/jenkins_home/workspace/nar-scanning_commons-lang_master:/app \
+                        -w /app \
+                        ${DOCKER_IMAGE} \
+                        mvn clean verify -DskipITs
+                '''
             }
         }
 
@@ -46,11 +56,15 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
-                        mvn sonar:sonar \
-                            -Dsonar.host.url=${SONAR_HOST} \
-                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                            -Dsonar.projectName=commons-lang \
-                            -Dsonar.login=${SONAR_TOKEN}
+                        docker run --rm \
+                            -v /var/jenkins_home/workspace/nar-scanning_commons-lang_master:/app \
+                            -w /app \
+                            ${DOCKER_IMAGE} \
+                            mvn sonar:sonar \
+                                -Dsonar.host.url=${SONAR_HOST} \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.projectName=commons-lang \
+                                -Dsonar.login=${SONAR_TOKEN}
                     '''
                 }
             }
