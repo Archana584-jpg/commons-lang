@@ -85,15 +85,11 @@ CMD ["mvn", "--version"]
                 script {
                     dir(env.CHANGE_ID ? 'source' : '.') {
                         sh '''
-                            echo "Creating tar archive (excluding .git and target)..."
-                            tar czf /tmp/workspace.tar.gz --exclude=.git --exclude=target .
-                            
-                            echo "Running Maven build with coverage..."
+                            echo "Running Maven build with coverage inside Docker..."
                             docker run --rm \
-                                -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
+                                -v $(pwd):/workspace \
                                 ${DOCKER_IMAGE} \
-                                bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false -Pjacoco"
-                            
+                                bash -c "cd /workspace && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false -Pjacoco"
                             echo "Build complete"
                         '''
                     }
@@ -107,9 +103,6 @@ CMD ["mvn", "--version"]
                     script {
                         dir(env.CHANGE_ID ? 'source' : '.') {
                             sh '''
-                                echo "Creating tar archive for SonarQube scan..."
-                                tar czf /tmp/workspace-scan.tar.gz --exclude=.git --exclude=target .
-                                
                                 echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
                                 
                                 SONAR_CMD="mvn sonar:sonar \
@@ -132,9 +125,9 @@ CMD ["mvn", "--version"]
                                 echo "Executing: ${SONAR_CMD}"
                                 
                                 docker run --rm \
-                                    -v /tmp/workspace-scan.tar.gz:/tmp/workspace-scan.tar.gz \
+                                    -v $(pwd):/workspace \
                                     ${DOCKER_IMAGE} \
-                                    bash -c "cd /workspace && tar xzf /tmp/workspace-scan.tar.gz && ${SONAR_CMD}"
+                                    bash -c "cd /workspace && ${SONAR_CMD}"
                                 
                                 echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
                             '''
@@ -158,7 +151,6 @@ CMD ["mvn", "--version"]
                         def newCodePassed = true
                         
                         for (int i = 0; i < maxAttempts; i++) {
-                            // Fetch the full quality gate status JSON
                             def projectStatusJson = sh(
                                 script: """
                                     curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}"
@@ -176,8 +168,6 @@ CMD ["mvn", "--version"]
                             if (status && status != "null") {
                                 echo "📊 Overall Quality Gate Status: ${status}"
                                 
-                                // Extract new-code conditions (where period is not null)
-                                // NOTE: backslashes are escaped for Groovy: \\( → literal \(
                                 def newCodeConditions = sh(
                                     script: """
                                         echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\\(.metricKey)=\\(.status)"'
