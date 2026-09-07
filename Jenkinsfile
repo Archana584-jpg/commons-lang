@@ -97,11 +97,7 @@ CMD ["mvn", "--version"]
                             -v /tmp:/tmp \
                             -w /app \
                             ${DOCKER_IMAGE} \
-                            bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar \
-                                -Dsonar.host.url=${SONAR_HOST} \
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                -Dsonar.projectName=commons-lang \
-                                -Dsonar.login=${SONAR_TOKEN}"
+                            bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar -Dsonar.host.url=${SONAR_HOST} -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName=commons-lang -Dsonar.login=${SONAR_TOKEN}"
                     '''
                 }
             }
