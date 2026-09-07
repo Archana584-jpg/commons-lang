@@ -9,18 +9,28 @@ pipeline {
     environment {
         SONAR_HOST = 'http://13.206.75.229:9000'
         DOCKER_IMAGE = 'commons-lang-build:latest'
+        // GitHub repo for status updates
+        REPO_OWNER = 'apache'
+        REPO_NAME = 'commons-lang'
     }
 
     stages {
         stage('Setup') {
             steps {
                 script {
+                    // Better project key naming with PR info
                     if (env.CHANGE_ID) {
                         env.SONAR_PROJECT_KEY = "commons-lang-pr-${env.CHANGE_ID}"
-                        echo "🔍 PR #${env.CHANGE_ID}"
+                        env.SONAR_PROJECT_NAME = "Commons Lang PR #${env.CHANGE_ID}"
+                        env.SOURCE_BRANCH = env.CHANGE_BRANCH ?: 'feature'
+                        env.TARGET_BRANCH = env.CHANGE_TARGET ?: 'master'
+                        echo "🔍 PR #${env.CHANGE_ID} from ${env.SOURCE_BRANCH} → ${env.TARGET_BRANCH}"
                     } else {
                         env.SONAR_PROJECT_KEY = 'commons-lang-main'
-                        echo "📌 Main branch"
+                        env.SONAR_PROJECT_NAME = 'Commons Lang Main'
+                        env.SOURCE_BRANCH = 'main'
+                        env.TARGET_BRANCH = 'main'
+                        echo "📌 Main branch scan"
                     }
                 }
             }
@@ -28,7 +38,26 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                checkout scm
+                script {
+                    if (env.CHANGE_ID) {
+                        // For PR builds, checkout the PR branch
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "${env.CHANGE_BRANCH}"]],
+                            userRemoteConfigs: [[url: "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"]],
+                            extensions: [
+                                [$class: 'RelativeTargetDirectory', relativeTargetDir: 'source'],
+                                [$class: 'CloneOption', depth: 0, noTags: false, reference: '', shallow: false]
+                            ]
+                        ])
+                        // Fetch target branch for comparison
+                        dir('source') {
+                            sh "git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}"
+                        }
+                    } else {
+                        checkout scm
+                    }
+                }
             }
         }
 
@@ -41,6 +70,7 @@ RUN apt-get update && apt-get install -y \
     maven \
     git \
     curl \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /workspace
 CMD ["mvn", "--version"]
@@ -54,40 +84,134 @@ CMD ["mvn", "--version"]
             }
         }
 
-        stage('Build & Test') {
+        stage('Build & Test with Coverage') {
             steps {
-                sh '''
-                    cd ${WORKSPACE}
-                    echo "Creating tar archive..."
-                    tar czf /tmp/workspace.tar.gz . --exclude=.git
-                    
-                    echo "Running Maven build in Docker..."
-                    docker run --rm \
-                        -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
-                        ${DOCKER_IMAGE} \
-                        bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn clean verify -DskipITs"
-                    
-                    echo "Build complete"
-                '''
+                script {
+                    dir(env.CHANGE_ID ? 'source' : '.') {
+                        sh '''
+                            echo "Creating tar archive..."
+                            tar czf /tmp/workspace.tar.gz . --exclude=.git --exclude=target
+                            
+                            echo "Running Maven build with coverage..."
+                            docker run --rm \
+                                -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
+                                ${DOCKER_IMAGE} \
+                                bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false -Pjacoco"
+                            
+                            echo "Build complete"
+                        '''
+                    }
+                }
             }
         }
 
         stage('SonarQube Scan') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        cd ${WORKSPACE}
-                        echo "Creating tar archive..."
-                        tar czf /tmp/workspace.tar.gz . --exclude=.git
+                    script {
+                        dir(env.CHANGE_ID ? 'source' : '.') {
+                            sh '''
+                                echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
+                                
+                                # Build SonarQube command with PR-specific params
+                                SONAR_CMD="mvn sonar:sonar \
+                                    -Dsonar.host.url=${SONAR_HOST} \
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                    -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                                    -Dsonar.login=${SONAR_TOKEN} \
+                                    -Dsonar.java.binaries=target/classes \
+                                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                                    -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
+                                
+                                # Add PR-specific parameters if this is a PR
+                                if [ -n "${CHANGE_ID}" ]; then
+                                    SONAR_CMD="${SONAR_CMD} \
+                                        -Dsonar.branch.name=${SOURCE_BRANCH} \
+                                        -Dsonar.branch.target=${TARGET_BRANCH} \
+                                        -Dsonar.analysis.leak.period=${TARGET_BRANCH}"
+                                    echo "🔍 PR scan mode enabled"
+                                fi
+                                
+                                echo "Executing: ${SONAR_CMD}"
+                                
+                                # Create tar and run scan
+                                tar czf /tmp/workspace-scan.tar.gz . --exclude=.git --exclude=target
+                                docker run --rm \
+                                    -v /tmp/workspace-scan.tar.gz:/tmp/workspace-scan.tar.gz \
+                                    ${DOCKER_IMAGE} \
+                                    bash -c "cd /workspace && tar xzf /tmp/workspace-scan.tar.gz && ${SONAR_CMD}"
+                                
+                                echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate Check') {
+            when {
+                expression { env.CHANGE_ID != null }
+            }
+            steps {
+                script {
+                    dir(env.CHANGE_ID ? 'source' : '.') {
+                        // Wait for analysis to complete and get quality gate status
+                        echo "⏳ Waiting for SonarQube analysis to complete..."
                         
-                        echo "Running SonarQube scan in Docker..."
-                        docker run --rm \
-                            -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
-                            ${DOCKER_IMAGE} \
-                            bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn sonar:sonar -Dsonar.host.url=${SONAR_HOST} -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName=commons-lang -Dsonar.login=${SONAR_TOKEN}"
+                        // Poll SonarQube API for quality gate status
+                        def maxAttempts = 30
+                        def waitTime = 10
+                        def qualityGatePassed = false
+                        def analysisId = ""
                         
-                        echo "Scan complete"
-                    '''
+                        for (int i = 0; i < maxAttempts; i++) {
+                            // Get analysis ID
+                            def projectStatus = sh(
+                                script: """
+                                    curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/project_analyses/search?project=${SONAR_PROJECT_KEY}&ps=1" | jq -r '.analyses[0].key'
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (projectStatus && projectStatus != "null") {
+                                analysisId = projectStatus
+                                echo "✅ Found analysis: ${analysisId}"
+                                
+                                // Get quality gate status
+                                def gateStatus = sh(
+                                    script: """
+                                        curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?analysisId=${analysisId}" | jq -r '.projectStatus.status'
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                                
+                                if (gateStatus && gateStatus != "null") {
+                                    echo "📊 Quality Gate Status: ${gateStatus}"
+                                    if (gateStatus == "OK") {
+                                        qualityGatePassed = true
+                                        break
+                                    } else if (gateStatus == "ERROR") {
+                                        qualityGatePassed = false
+                                        break
+                                    }
+                                }
+                            }
+                            
+                            echo "⏳ Waiting for analysis... (${i+1}/${maxAttempts})"
+                            sleep time: waitTime, unit: 'SECONDS'
+                        }
+                        
+                        // Update GitHub PR status
+                        if (qualityGatePassed) {
+                            echo "✅ Quality Gate PASSED!"
+                            updateGitHubStatus('success', 'SonarQube: New code quality passed!')
+                        } else {
+                            echo "❌ Quality Gate FAILED!"
+                            updateGitHubStatus('failure', 'SonarQube: New code introduced issues.')
+                            error "Quality gate failed for new code. Check the report: ${SONAR_HOST}/dashboard?id=${SONAR_PROJECT_KEY}"
+                        }
+                    }
                 }
             }
         }
@@ -95,7 +219,52 @@ CMD ["mvn", "--version"]
 
     post {
         always {
+            script {
+                // Clean up SonarQube project if PR is merged/closed
+                if (env.CHANGE_ID && (currentBuild.result == 'SUCCESS' || currentBuild.result == 'ABORTED')) {
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        sh """
+                            echo "🗑️ Deleting temporary project: ${SONAR_PROJECT_KEY}"
+                            curl -X POST "${SONAR_HOST}/api/projects/delete" \
+                                -d "project=${SONAR_PROJECT_KEY}" \
+                                -u ${SONAR_TOKEN}:
+                            echo "✅ Project deleted"
+                        """
+                    }
+                } else if (env.CHANGE_ID && currentBuild.result == 'FAILURE') {
+                    echo "⚠️ Build failed. Keeping SonarQube project for debugging: ${SONAR_PROJECT_KEY}"
+                }
+            }
             cleanWs()
         }
+        failure {
+            // Update GitHub status on build failure
+            if (env.CHANGE_ID) {
+                updateGitHubStatus('failure', 'Jenkins build failed. Check logs.')
+            }
+        }
+        aborted {
+            if (env.CHANGE_ID) {
+                updateGitHubStatus('failure', 'Jenkins build aborted.')
+            }
+        }
+    }
+}
+
+// Helper function to update GitHub status
+def updateGitHubStatus(String state, String description) {
+    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+        sh """
+            curl -X POST "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/statuses/${env.CHANGE_BRANCH}" \
+                -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -d '{
+                    "state": "${state}",
+                    "target_url": "${env.BUILD_URL}",
+                    "description": "${description}",
+                    "context": "SonarQube/New Code Quality"
+                }'
+            echo "✅ GitHub status updated to: ${state}"
+        """
     }
 }
