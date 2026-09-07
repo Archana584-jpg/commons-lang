@@ -32,6 +32,32 @@ pipeline {
             }
         }
 
+        stage('DEBUG: Check Workspace') {
+            steps {
+                sh '''
+                    echo "========== WORKSPACE PATH =========="
+                    pwd
+                    echo ""
+                    
+                    echo "========== FILES IN WORKSPACE =========="
+                    ls -la
+                    echo ""
+                    
+                    echo "========== SEARCH FOR POM.XML =========="
+                    find . -name "pom.xml" -type f | head -10
+                    echo ""
+                    
+                    echo "========== WORKSPACE SIZE =========="
+                    du -sh .
+                    echo ""
+                    
+                    echo "========== GIT INFO =========="
+                    git branch -a
+                    git log --oneline -5
+                '''
+            }
+        }
+
         stage('Write Dockerfile') {
             steps {
                 writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
@@ -54,37 +80,24 @@ CMD ["mvn", "--version"]
             }
         }
 
-        stage('Build & Test') {
+        stage('DEBUG: Check Docker Mount') {
             steps {
                 sh '''
-                    cd ${WORKSPACE}
-                    echo "Running Maven build in Docker..."
-                    docker run --rm --user root \
+                    echo "========== FILES INSIDE DOCKER =========="
+                    docker run --rm \
                         -v ${WORKSPACE}:${WORKSPACE} \
                         -w ${WORKSPACE} \
                         ${DOCKER_IMAGE} \
-                        mvn clean verify -DskipITs
+                        ls -la
+                    echo ""
+                    
+                    echo "========== SEARCH POM IN DOCKER =========="
+                    docker run --rm \
+                        -v ${WORKSPACE}:${WORKSPACE} \
+                        -w ${WORKSPACE} \
+                        ${DOCKER_IMAGE} \
+                        find . -name "pom.xml" -type f | head -10
                 '''
-            }
-        }
-
-        stage('SonarQube Scan') {
-            steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        cd ${WORKSPACE}
-                        echo "Running SonarQube scan in Docker..."
-                        docker run --rm --user root \
-                            -v ${WORKSPACE}:${WORKSPACE} \
-                            -w ${WORKSPACE} \
-                            ${DOCKER_IMAGE} \
-                            mvn sonar:sonar \
-                                -Dsonar.host.url=${SONAR_HOST} \
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                -Dsonar.projectName=commons-lang \
-                                -Dsonar.login=${SONAR_TOKEN}
-                    '''
-                }
             }
         }
     }
