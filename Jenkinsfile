@@ -70,12 +70,16 @@ CMD ["mvn", "--version"]
             steps {
                 sh '''
                     cd ${WORKSPACE}
+                    echo "Creating tar file..."
                     tar -czf /tmp/workspace.tar.gz .
+                    ls -lh /tmp/workspace.tar.gz
+                    
+                    echo "Running Maven in Docker..."
                     docker run --rm --user root \
                         -v /tmp:/tmp \
                         -w /app \
                         ${DOCKER_IMAGE} \
-                        sh -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn clean verify -DskipITs"
+                        bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn clean verify -DskipITs"
                 '''
             }
         }
@@ -85,12 +89,15 @@ CMD ["mvn", "--version"]
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         cd ${WORKSPACE}
+                        echo "Creating tar file..."
                         tar -czf /tmp/workspace.tar.gz .
+                        
+                        echo "Running SonarQube scan in Docker..."
                         docker run --rm --user root \
                             -v /tmp:/tmp \
                             -w /app \
                             ${DOCKER_IMAGE} \
-                            sh -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar \
+                            bash -c "tar -xzf /tmp/workspace.tar.gz -C /app && mvn sonar:sonar \
                                 -Dsonar.host.url=${SONAR_HOST} \
                                 -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                                 -Dsonar.projectName=commons-lang \
