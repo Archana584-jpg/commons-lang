@@ -57,51 +57,47 @@ CMD ["mvn", "--version"]
         stage('Build & Test') {
             steps {
                 sh '''
-                    cd ${WORKSPACE}
-                    echo "Running Maven build in Docker..."
+                    echo "========== WORKSPACE BEFORE COPY =========="
+                    pwd
+                    ls -la | head -20
+                    echo ""
                     
-                    # Copy workspace to temp location on host
+                    echo "========== CREATE TEMP DIR =========="
                     TEMP_DIR=$(mktemp -d)
-                    cp -r . $TEMP_DIR/
+                    echo "Temp dir: $TEMP_DIR"
+                    ls -la $TEMP_DIR
+                    echo ""
                     
-                    # Run docker with host temp path
+                    echo "========== COPY FILES TO TEMP =========="
+                    cp -rv . $TEMP_DIR/ 2>&1 | head -20
+                    echo ""
+                    
+                    echo "========== TEMP DIR AFTER COPY =========="
+                    ls -la $TEMP_DIR | head -20
+                    echo ""
+                    
+                    echo "========== CHECK FOR POM IN TEMP =========="
+                    find $TEMP_DIR -name "pom.xml" -type f
+                    echo ""
+                    
+                    echo "========== RUN DOCKER =========="
+                    docker run --rm \
+                        -v $TEMP_DIR:$TEMP_DIR \
+                        -w $TEMP_DIR \
+                        ${DOCKER_IMAGE} \
+                        ls -la
+                    echo ""
+                    
+                    echo "========== RUN MAVEN =========="
                     docker run --rm \
                         -v $TEMP_DIR:$TEMP_DIR \
                         -w $TEMP_DIR \
                         ${DOCKER_IMAGE} \
                         mvn clean verify -DskipITs
                     
-                    # Copy results back
-                    cp -r $TEMP_DIR/* ${WORKSPACE}/
+                    echo "========== CLEANUP =========="
                     rm -rf $TEMP_DIR
                 '''
-            }
-        }
-
-        stage('SonarQube Scan') {
-            steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        cd ${WORKSPACE}
-                        echo "Running SonarQube scan in Docker..."
-                        
-                        TEMP_DIR=$(mktemp -d)
-                        cp -r . $TEMP_DIR/
-                        
-                        docker run --rm \
-                            -v $TEMP_DIR:$TEMP_DIR \
-                            -w $TEMP_DIR \
-                            ${DOCKER_IMAGE} \
-                            mvn sonar:sonar \
-                                -Dsonar.host.url=${SONAR_HOST} \
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                -Dsonar.projectName=commons-lang \
-                                -Dsonar.login=${SONAR_TOKEN}
-                        
-                        cp -r $TEMP_DIR/* ${WORKSPACE}/
-                        rm -rf $TEMP_DIR
-                    '''
-                }
             }
         }
     }
