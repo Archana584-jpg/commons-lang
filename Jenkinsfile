@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
+WORKDIR /workspace
 CMD ["mvn", "--version"]
 '''
             }
@@ -57,47 +57,38 @@ CMD ["mvn", "--version"]
         stage('Build & Test') {
             steps {
                 sh '''
-                    echo "========== WORKSPACE BEFORE COPY =========="
-                    pwd
-                    ls -la | head -20
-                    echo ""
+                    cd ${WORKSPACE}
+                    echo "Creating tar archive..."
+                    tar czf /tmp/workspace.tar.gz . --exclude=.git
                     
-                    echo "========== CREATE TEMP DIR =========="
-                    TEMP_DIR=$(mktemp -d)
-                    echo "Temp dir: $TEMP_DIR"
-                    ls -la $TEMP_DIR
-                    echo ""
-                    
-                    echo "========== COPY FILES TO TEMP =========="
-                    cp -rv . $TEMP_DIR/ 2>&1 | head -20
-                    echo ""
-                    
-                    echo "========== TEMP DIR AFTER COPY =========="
-                    ls -la $TEMP_DIR | head -20
-                    echo ""
-                    
-                    echo "========== CHECK FOR POM IN TEMP =========="
-                    find $TEMP_DIR -name "pom.xml" -type f
-                    echo ""
-                    
-                    echo "========== RUN DOCKER =========="
+                    echo "Running Maven build in Docker..."
                     docker run --rm \
-                        -v $TEMP_DIR:$TEMP_DIR \
-                        -w $TEMP_DIR \
+                        -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
                         ${DOCKER_IMAGE} \
-                        ls -la
-                    echo ""
+                        bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn clean verify -DskipITs"
                     
-                    echo "========== RUN MAVEN =========="
-                    docker run --rm \
-                        -v $TEMP_DIR:$TEMP_DIR \
-                        -w $TEMP_DIR \
-                        ${DOCKER_IMAGE} \
-                        mvn clean verify -DskipITs
-                    
-                    echo "========== CLEANUP =========="
-                    rm -rf $TEMP_DIR
+                    echo "Build complete"
                 '''
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        cd ${WORKSPACE}
+                        echo "Creating tar archive..."
+                        tar czf /tmp/workspace.tar.gz . --exclude=.git
+                        
+                        echo "Running SonarQube scan in Docker..."
+                        docker run --rm \
+                            -v /tmp/workspace.tar.gz:/tmp/workspace.tar.gz \
+                            ${DOCKER_IMAGE} \
+                            bash -c "cd /workspace && tar xzf /tmp/workspace.tar.gz && mvn sonar:sonar -Dsonar.host.url=${SONAR_HOST} -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.projectName=commons-lang -Dsonar.login=${SONAR_TOKEN}"
+                        
+                        echo "Scan complete"
+                    '''
+                }
             }
         }
     }
