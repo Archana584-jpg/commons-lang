@@ -86,7 +86,6 @@ CMD ["mvn", "--version"]
                     dir(env.CHANGE_ID ? 'source' : '.') {
                         sh '''
                             echo "Creating tar archive (excluding .git and target)..."
-                            # FIX: --exclude before the source directory
                             tar czf /tmp/workspace.tar.gz --exclude=.git --exclude=target .
                             
                             echo "Running Maven build with coverage..."
@@ -159,6 +158,7 @@ CMD ["mvn", "--version"]
                         def newCodePassed = true
                         
                         for (int i = 0; i < maxAttempts; i++) {
+                            // Fetch the full quality gate status JSON
                             def projectStatusJson = sh(
                                 script: """
                                     curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}"
@@ -177,9 +177,10 @@ CMD ["mvn", "--version"]
                                 echo "📊 Overall Quality Gate Status: ${status}"
                                 
                                 // Extract new-code conditions (where period is not null)
+                                // NOTE: backslashes are escaped for Groovy: \\( → literal \(
                                 def newCodeConditions = sh(
                                     script: """
-                                        echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\(.metricKey)=\(.status)"'
+                                        echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\\(.metricKey)=\\(.status)"'
                                     """,
                                     returnStdout: true
                                 ).trim()
