@@ -85,8 +85,9 @@ CMD ["mvn", "--version"]
                 script {
                     dir(env.CHANGE_ID ? 'source' : '.') {
                         sh '''
-                            echo "Creating tar archive..."
-                            tar czf /tmp/workspace.tar.gz . --exclude=.git --exclude=target
+                            echo "Creating tar archive (excluding .git and target)..."
+                            # FIX: --exclude before the source directory
+                            tar czf /tmp/workspace.tar.gz --exclude=.git --exclude=target .
                             
                             echo "Running Maven build with coverage..."
                             docker run --rm \
@@ -107,6 +108,9 @@ CMD ["mvn", "--version"]
                     script {
                         dir(env.CHANGE_ID ? 'source' : '.') {
                             sh '''
+                                echo "Creating tar archive for SonarQube scan..."
+                                tar czf /tmp/workspace-scan.tar.gz --exclude=.git --exclude=target .
+                                
                                 echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
                                 
                                 SONAR_CMD="mvn sonar:sonar \
@@ -128,7 +132,6 @@ CMD ["mvn", "--version"]
                                 
                                 echo "Executing: ${SONAR_CMD}"
                                 
-                                tar czf /tmp/workspace-scan.tar.gz . --exclude=.git --exclude=target
                                 docker run --rm \
                                     -v /tmp/workspace-scan.tar.gz:/tmp/workspace-scan.tar.gz \
                                     ${DOCKER_IMAGE} \
@@ -153,37 +156,60 @@ CMD ["mvn", "--version"]
                         
                         def maxAttempts = 30
                         def waitTime = 10
-                        def qualityGatePassed = false
-                        def analysisId = ""
+                        def newCodePassed = true
                         
                         for (int i = 0; i < maxAttempts; i++) {
-                            def projectStatus = sh(
+                            def projectStatusJson = sh(
                                 script: """
-                                    curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/project_analyses/search?project=${SONAR_PROJECT_KEY}&ps=1" | jq -r '.analyses[0].key'
+                                    curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}"
                                 """,
                                 returnStdout: true
                             ).trim()
                             
-                            if (projectStatus && projectStatus != "null") {
-                                analysisId = projectStatus
-                                echo "✅ Found analysis: ${analysisId}"
+                            def status = sh(
+                                script: """
+                                    echo '${projectStatusJson}' | jq -r '.projectStatus.status'
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (status && status != "null") {
+                                echo "📊 Overall Quality Gate Status: ${status}"
                                 
-                                def gateStatus = sh(
+                                // Extract new-code conditions (where period is not null)
+                                def newCodeConditions = sh(
                                     script: """
-                                        curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?analysisId=${analysisId}" | jq -r '.projectStatus.status'
+                                        echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\(.metricKey)=\(.status)"'
                                     """,
                                     returnStdout: true
                                 ).trim()
                                 
-                                if (gateStatus && gateStatus != "null") {
-                                    echo "📊 Quality Gate Status: ${gateStatus}"
-                                    if (gateStatus == "OK") {
-                                        qualityGatePassed = true
-                                        break
-                                    } else if (gateStatus == "ERROR") {
-                                        qualityGatePassed = false
-                                        break
+                                if (newCodeConditions) {
+                                    echo "📋 New Code Conditions:"
+                                    echo "${newCodeConditions}"
+                                    
+                                    def failedNewCode = sh(
+                                        script: """
+                                            echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null and .status == "ERROR") | .metricKey'
+                                        """,
+                                        returnStdout: true
+                                    ).trim()
+                                    
+                                    if (failedNewCode) {
+                                        newCodePassed = false
+                                        echo "❌ New code failed on: ${failedNewCode}"
+                                    } else {
+                                        newCodePassed = true
                                     }
+                                    break
+                                } else {
+                                    echo "⚠️ No new-code conditions found. Falling back to overall status."
+                                    if (status == "ERROR") {
+                                        newCodePassed = false
+                                    } else {
+                                        newCodePassed = true
+                                    }
+                                    break
                                 }
                             }
                             
@@ -191,13 +217,13 @@ CMD ["mvn", "--version"]
                             sleep time: waitTime, unit: 'SECONDS'
                         }
                         
-                        if (qualityGatePassed) {
-                            echo "✅ Quality Gate PASSED!"
+                        if (newCodePassed) {
+                            echo "✅ New code quality gate PASSED!"
                             updateGitHubStatus('success', 'SonarQube: New code quality passed!')
                         } else {
-                            echo "❌ Quality Gate FAILED!"
+                            echo "❌ New code quality gate FAILED!"
                             updateGitHubStatus('failure', 'SonarQube: New code introduced issues.')
-                            error "Quality gate failed for new code. Check the report: ${SONAR_HOST}/dashboard?id=${SONAR_PROJECT_KEY}"
+                            error "New code quality gate failed. Check the report: ${SONAR_HOST}/dashboard?id=${SONAR_PROJECT_KEY}"
                         }
                     }
                 }
@@ -208,7 +234,6 @@ CMD ["mvn", "--version"]
     post {
         always {
             script {
-                // Clean up SonarQube project if PR is merged/closed
                 if (env.CHANGE_ID && (currentBuild.result == 'SUCCESS' || currentBuild.result == 'ABORTED')) {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                         sh """
@@ -242,9 +267,6 @@ CMD ["mvn", "--version"]
     }
 }
 
-// ------------------------------------------------------------------
-// Helper function to update GitHub PR status
-// ------------------------------------------------------------------
 def updateGitHubStatus(String state, String description) {
     withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
         sh """
