@@ -9,7 +9,6 @@ pipeline {
     environment {
         SONAR_HOST = 'http://13.206.75.229:9000'
         DOCKER_IMAGE = 'commons-lang-build:latest'
-        WORKSPACE_DIR = '/var/jenkins_home/workspace/nar-scanning_commons-lang_master'
     }
 
     stages {
@@ -52,7 +51,6 @@ WORKDIR /app
 
 CMD ["mvn", "--version"]
 '''
-                sh 'cat Dockerfile'
             }
         }
 
@@ -64,9 +62,7 @@ CMD ["mvn", "--version"]
 
         stage('Verify Maven') {
             steps {
-                sh '''
-                    docker run --rm ${DOCKER_IMAGE} mvn --version
-                '''
+                sh 'docker run --rm ${DOCKER_IMAGE} mvn --version'
             }
         }
 
@@ -74,7 +70,7 @@ CMD ["mvn", "--version"]
             steps {
                 sh '''
                     docker run --rm \
-                        -v ${WORKSPACE_DIR}:/app \
+                        -v ${WORKSPACE}:/app \
                         -w /app \
                         ${DOCKER_IMAGE} \
                         mvn clean verify -DskipITs
@@ -87,7 +83,7 @@ CMD ["mvn", "--version"]
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         docker run --rm \
-                            -v ${WORKSPACE_DIR}:/app \
+                            -v ${WORKSPACE}:/app \
                             -w /app \
                             ${DOCKER_IMAGE} \
                             mvn sonar:sonar \
