@@ -32,6 +32,22 @@ pipeline {
             }
         }
 
+        stage('Write Dockerfile') {
+            steps {
+                writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    openjdk-11-jdk-headless \
+    maven \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+CMD ["mvn", "--version"]
+'''
+            }
+        }
+
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
