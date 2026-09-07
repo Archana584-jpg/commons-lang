@@ -34,36 +34,21 @@ pipeline {
             }
         }
 
-        // For PR we need a custom checkout into a subdirectory
-        stage('Checkout PR') {
+        // For PRs, fetch the target branch so SonarQube can compute the diff
+        stage('Fetch Target Branch (PR only)') {
             when {
                 expression { env.CHANGE_ID != null }
             }
             steps {
-                script {
-                    checkout([
-                        $class: 'GitSCM',
-                        branches: [[name: "${env.CHANGE_BRANCH}"]],
-                        userRemoteConfigs: [[url: "https://github.com/${REPO_OWNER}/${REPO_NAME}.git"]],
-                        extensions: [
-                            [$class: 'RelativeTargetDirectory', relativeTargetDir: 'source'],
-                            [$class: 'CloneOption', depth: 0, noTags: false, reference: '', shallow: false]
-                        ]
-                    ])
-                    dir('source') {
-                        sh "git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}"
-                    }
-                }
+                sh """
+                    echo "Fetching target branch ${env.TARGET_BRANCH} for PR comparison..."
+                    git fetch origin ${env.TARGET_BRANCH}:${env.TARGET_BRANCH}
+                """
             }
         }
 
-        // Build Docker image only if needed (for PRs or if you prefer)
         stage('Build Docker Image') {
-            when {
-                expression { env.CHANGE_ID != null }  // only build for PRs
-            }
             steps {
-                // This Dockerfile is only needed for PR builds
                 writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
@@ -80,184 +65,139 @@ CMD ["mvn", "--version"]
             }
         }
 
-        // Build & Test – for master: use agent's Maven, for PR: use Docker
-        stage('Build & Test') {
+        stage('Build & Test with Coverage') {
             steps {
-                script {
-                    if (env.CHANGE_ID) {
-                        // PR – use Docker (but first debug)
-                        dir('source') {
-                            sh '''
-                                echo "===== DEBUG: Current directory ====="
-                                pwd
-                                echo "===== Files in current directory ====="
-                                ls -la
-                                echo "===== Checking for pom.xml ====="
-                                if [ -f pom.xml ]; then echo "pom.xml found"; else echo "pom.xml NOT found"; fi
-                            '''
-                            sh '''
-                                echo "Running Maven build with coverage inside Docker..."
-                                docker run --rm \
-                                    -v $(pwd):/workspace \
-                                    ${DOCKER_IMAGE} \
-                                    bash -c "ls -la /workspace && cd /workspace && mvn clean verify site -Dcommons.jacoco.haltOnFailure=false"
-                                echo "Build complete"
-                            '''
-                        }
-                    } else {
-                        // master – run Maven directly on agent
-                        sh '''
-                            echo "Running Maven build on agent (no Docker)..."
-                            # Assumes Maven and JDK are installed on agent
-                            mvn clean verify site -Dcommons.jacoco.haltOnFailure=false
-                            echo "Build complete"
-                        '''
-                    }
-                }
+                sh '''
+                    echo "===== Current directory ====="
+                    pwd
+                    echo "===== Files in workspace ====="
+                    ls -la
+                    echo "===== Checking for pom.xml ====="
+                    if [ -f pom.xml ]; then echo "✅ pom.xml found"; else echo "❌ pom.xml NOT found"; exit 1; fi
+
+                    echo "Running Maven build with coverage inside Docker..."
+                    docker run --rm \
+                        -v "$PWD":"$PWD" -w "$PWD" \
+                        ${DOCKER_IMAGE} \
+                        bash -c "mvn clean verify site -Dcommons.jacoco.haltOnFailure=false"
+                    echo "Build complete"
+                '''
             }
         }
 
-        // SonarQube Scan – similar split
         stage('SonarQube Scan') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    script {
-                        if (env.CHANGE_ID) {
-                            dir('source') {
-                                sh '''
-                                    echo "Running SonarQube scan for ${SONAR_PROJECT_KEY} using Docker..."
-                                    
-                                    SONAR_CMD="mvn sonar:sonar \
-                                        -Dsonar.host.url=${SONAR_HOST} \
-                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                        -Dsonar.projectName=${SONAR_PROJECT_NAME} \
-                                        -Dsonar.login=${SONAR_TOKEN} \
-                                        -Dsonar.java.binaries=target/classes \
-                                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                        -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
-                                    
-                                    if [ -n "${CHANGE_ID}" ]; then
-                                        SONAR_CMD="${SONAR_CMD} \
-                                            -Dsonar.branch.name=${SOURCE_BRANCH} \
-                                            -Dsonar.branch.target=${TARGET_BRANCH} \
-                                            -Dsonar.analysis.leak.period=${TARGET_BRANCH}"
-                                        echo "🔍 PR scan mode enabled"
-                                    fi
-                                    
-                                    echo "Executing: ${SONAR_CMD}"
-                                    
-                                    docker run --rm \
-                                        -v $(pwd):/workspace \
-                                        ${DOCKER_IMAGE} \
-                                        bash -c "cd /workspace && ${SONAR_CMD}"
-                                    
-                                    echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
-                                '''
-                            }
-                        } else {
-                            // master – run Maven directly on agent
-                            sh '''
-                                echo "Running SonarQube scan for ${SONAR_PROJECT_KEY} on agent..."
-                                
-                                SONAR_CMD="mvn sonar:sonar \
-                                    -Dsonar.host.url=${SONAR_HOST} \
-                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                    -Dsonar.projectName=${SONAR_PROJECT_NAME} \
-                                    -Dsonar.login=${SONAR_TOKEN} \
-                                    -Dsonar.java.binaries=target/classes \
-                                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
-                                    -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
-                                
-                                echo "Executing: ${SONAR_CMD}"
-                                eval ${SONAR_CMD}
-                                echo "✅ Scan complete"
-                            '''
-                        }
-                    }
+                    sh '''
+                        echo "Running SonarQube scan for ${SONAR_PROJECT_KEY}..."
+                        
+                        SONAR_CMD="mvn sonar:sonar \
+                            -Dsonar.host.url=${SONAR_HOST} \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.projectName=${SONAR_PROJECT_NAME} \
+                            -Dsonar.login=${SONAR_TOKEN} \
+                            -Dsonar.java.binaries=target/classes \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                            -Dsonar.exclusions=**/test/**,**/src/test/**,**/target/**"
+                        
+                        if [ -n "${CHANGE_ID}" ]; then
+                            SONAR_CMD="${SONAR_CMD} \
+                                -Dsonar.branch.name=${SOURCE_BRANCH} \
+                                -Dsonar.branch.target=${TARGET_BRANCH} \
+                                -Dsonar.analysis.leak.period=${TARGET_BRANCH}"
+                            echo "🔍 PR scan mode enabled"
+                        fi
+                        
+                        echo "Executing: ${SONAR_CMD}"
+                        
+                        docker run --rm \
+                            -v "$PWD":"$PWD" -w "$PWD" \
+                            ${DOCKER_IMAGE} \
+                            bash -c "${SONAR_CMD}"
+                        
+                        echo "✅ Scan complete for ${SONAR_PROJECT_KEY}"
+                    '''
                 }
             }
         }
 
-        // Quality Gate Check – only for PRs
         stage('Quality Gate Check') {
             when {
                 expression { env.CHANGE_ID != null }
             }
             steps {
                 script {
-                    dir('source') {
-                        echo "⏳ Waiting for SonarQube analysis to complete..."
+                    echo "⏳ Waiting for SonarQube analysis to complete..."
+                    
+                    def maxAttempts = 30
+                    def waitTime = 10
+                    def newCodePassed = true
+                    
+                    for (int i = 0; i < maxAttempts; i++) {
+                        def projectStatusJson = sh(
+                            script: """
+                                curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}"
+                            """,
+                            returnStdout: true
+                        ).trim()
                         
-                        def maxAttempts = 30
-                        def waitTime = 10
-                        def newCodePassed = true
+                        def status = sh(
+                            script: """
+                                echo '${projectStatusJson}' | jq -r '.projectStatus.status'
+                            """,
+                            returnStdout: true
+                        ).trim()
                         
-                        for (int i = 0; i < maxAttempts; i++) {
-                            def projectStatusJson = sh(
+                        if (status && status != "null") {
+                            echo "📊 Overall Quality Gate Status: ${status}"
+                            
+                            def newCodeConditions = sh(
                                 script: """
-                                    curl -s -u ${SONAR_TOKEN}: "${SONAR_HOST}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}"
+                                    echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\\(.metricKey)=\\(.status)"'
                                 """,
                                 returnStdout: true
                             ).trim()
                             
-                            def status = sh(
-                                script: """
-                                    echo '${projectStatusJson}' | jq -r '.projectStatus.status'
-                                """,
-                                returnStdout: true
-                            ).trim()
-                            
-                            if (status && status != "null") {
-                                echo "📊 Overall Quality Gate Status: ${status}"
+                            if (newCodeConditions) {
+                                echo "📋 New Code Conditions:"
+                                echo "${newCodeConditions}"
                                 
-                                def newCodeConditions = sh(
+                                def failedNewCode = sh(
                                     script: """
-                                        echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null) | "\\(.metricKey)=\\(.status)"'
+                                        echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null and .status == "ERROR") | .metricKey'
                                     """,
                                     returnStdout: true
                                 ).trim()
                                 
-                                if (newCodeConditions) {
-                                    echo "📋 New Code Conditions:"
-                                    echo "${newCodeConditions}"
-                                    
-                                    def failedNewCode = sh(
-                                        script: """
-                                            echo '${projectStatusJson}' | jq -r '.projectStatus.conditions[] | select(.period != null and .status == "ERROR") | .metricKey'
-                                        """,
-                                        returnStdout: true
-                                    ).trim()
-                                    
-                                    if (failedNewCode) {
-                                        newCodePassed = false
-                                        echo "❌ New code failed on: ${failedNewCode}"
-                                    } else {
-                                        newCodePassed = true
-                                    }
-                                    break
+                                if (failedNewCode) {
+                                    newCodePassed = false
+                                    echo "❌ New code failed on: ${failedNewCode}"
                                 } else {
-                                    echo "⚠️ No new-code conditions found. Falling back to overall status."
-                                    if (status == "ERROR") {
-                                        newCodePassed = false
-                                    } else {
-                                        newCodePassed = true
-                                    }
-                                    break
+                                    newCodePassed = true
                                 }
+                                break
+                            } else {
+                                echo "⚠️ No new-code conditions found. Falling back to overall status."
+                                if (status == "ERROR") {
+                                    newCodePassed = false
+                                } else {
+                                    newCodePassed = true
+                                }
+                                break
                             }
-                            
-                            echo "⏳ Waiting for analysis... (${i+1}/${maxAttempts})"
-                            sleep time: waitTime, unit: 'SECONDS'
                         }
                         
-                        if (newCodePassed) {
-                            echo "✅ New code quality gate PASSED!"
-                            updateGitHubStatus('success', 'SonarQube: New code quality passed!')
-                        } else {
-                            echo "❌ New code quality gate FAILED!"
-                            updateGitHubStatus('failure', 'SonarQube: New code introduced issues.')
-                            error "New code quality gate failed. Check the report: ${SONAR_HOST}/dashboard?id=${SONAR_PROJECT_KEY}"
-                        }
+                        echo "⏳ Waiting for analysis... (${i+1}/${maxAttempts})"
+                        sleep time: waitTime, unit: 'SECONDS'
+                    }
+                    
+                    if (newCodePassed) {
+                        echo "✅ New code quality gate PASSED!"
+                        updateGitHubStatus('success', 'SonarQube: New code quality passed!')
+                    } else {
+                        echo "❌ New code quality gate FAILED!"
+                        updateGitHubStatus('failure', 'SonarQube: New code introduced issues.')
+                        error "New code quality gate failed. Check the report: ${SONAR_HOST}/dashboard?id=${SONAR_PROJECT_KEY}"
                     }
                 }
             }
