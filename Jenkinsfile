@@ -57,11 +57,13 @@ CMD ["mvn", "--version"]
         stage('Build & Test') {
             steps {
                 sh '''
-                    cd ${WORKSPACE}
+                    WORKSPACE_PATH=$(pwd)
+                    echo "Workspace: $WORKSPACE_PATH"
                     echo "Running Maven build in Docker..."
-                    docker run --rm --privileged \
-                        -v ${WORKSPACE}:${WORKSPACE} \
-                        -w ${WORKSPACE} \
+                    
+                    docker run --rm \
+                        -v $WORKSPACE_PATH:$WORKSPACE_PATH \
+                        -w $WORKSPACE_PATH \
                         ${DOCKER_IMAGE} \
                         mvn clean verify -DskipITs
                 '''
@@ -72,11 +74,13 @@ CMD ["mvn", "--version"]
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
-                        cd ${WORKSPACE}
+                        WORKSPACE_PATH=$(pwd)
+                        echo "Workspace: $WORKSPACE_PATH"
                         echo "Running SonarQube scan in Docker..."
-                        docker run --rm --privileged \
-                            -v ${WORKSPACE}:${WORKSPACE} \
-                            -w ${WORKSPACE} \
+                        
+                        docker run --rm \
+                            -v $WORKSPACE_PATH:$WORKSPACE_PATH \
+                            -w $WORKSPACE_PATH \
                             ${DOCKER_IMAGE} \
                             mvn sonar:sonar \
                                 -Dsonar.host.url=${SONAR_HOST} \
