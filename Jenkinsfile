@@ -1,10 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'maven:3.9-jdk-11'
-            args '-v /root/.m2:/root/.m2'
-        }
-    }
+    agent any
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '3'))
@@ -40,6 +35,8 @@ pipeline {
 
         stage('Build & Test') {
             steps {
+                sh 'which mvn || echo "Maven not found, checking java..."'
+                sh 'java -version'
                 sh 'mvn --version'
                 sh 'mvn clean verify -DskipITs'
             }
