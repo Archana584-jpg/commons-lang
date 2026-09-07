@@ -9,6 +9,7 @@ pipeline {
     environment {
         SONAR_HOST = 'http://13.206.75.229:9000'
         DOCKER_IMAGE = 'commons-lang-build:latest'
+        WORKSPACE_DIR = '/var/jenkins_home/workspace/nar-scanning_commons-lang_master'
     }
 
     stages {
@@ -34,9 +35,38 @@ pipeline {
             }
         }
 
+        stage('Write Dockerfile') {
+            steps {
+                writeFile file: 'Dockerfile', text: '''FROM ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \\
+    openjdk-11-jdk-headless \\
+    maven \\
+    git \\
+    curl \\
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+CMD ["mvn", "--version"]
+'''
+                sh 'cat Dockerfile'
+            }
+        }
+
         stage('Build Docker Image') {
             steps {
                 sh 'docker build -t ${DOCKER_IMAGE} .'
+            }
+        }
+
+        stage('Verify Maven') {
+            steps {
+                sh '''
+                    docker run --rm ${DOCKER_IMAGE} mvn --version
+                '''
             }
         }
 
@@ -44,7 +74,7 @@ pipeline {
             steps {
                 sh '''
                     docker run --rm \
-                        -v /var/jenkins_home/workspace/nar-scanning_commons-lang_master:/app \
+                        -v ${WORKSPACE_DIR}:/app \
                         -w /app \
                         ${DOCKER_IMAGE} \
                         mvn clean verify -DskipITs
@@ -57,7 +87,7 @@ pipeline {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         docker run --rm \
-                            -v /var/jenkins_home/workspace/nar-scanning_commons-lang_master:/app \
+                            -v ${WORKSPACE_DIR}:/app \
                             -w /app \
                             ${DOCKER_IMAGE} \
                             mvn sonar:sonar \
